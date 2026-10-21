@@ -1,6 +1,6 @@
 # Chorus Go SDK
 
-Go client for [Chorus](https://github.com/mnemosyne-ai-systems/chorus), a state and coordination layer for long-running agent sessions.
+Go client for [Chorus](https://github.com/mnemosyne-ai-systems), a state and coordination layer for long-running agent sessions.
 
 The SDK caches the shard routing table locally, routes session-scoped requests by session ID, and implements the retry, redirect, and CAS policies required by the Chorus API.
 
