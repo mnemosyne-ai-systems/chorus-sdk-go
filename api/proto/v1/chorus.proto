@@ -1,0 +1,442 @@
+// chorus v1 API —— 严格对应设计方案 §8（API 规格）与 §10（错误码）。
+//
+// 服务划分（§3 拓扑：SDK → gRPC → 计算节点；控制面不做数据面代理）：
+//   - RouteService   路由查询面（§8.4），由每个计算节点暴露（各节点经 poller 持有全量路由表）
+//   - EntityService  实体生命周期（§8.1）
+//   - StateService   状态读写（§8.2）
+//   - ClaimService   协调原语 / Spawn Claim（§8.3）
+//
+// 错误传递：一律用 gRPC status + ChorusError 详情（grpc-status-details-bin）。
+// gRPC status code 只做粗分类，权威语义在 ChorusError.code（§10）。
+
+syntax = "proto3";
+
+package chorus.v1;
+
+option go_package = "github.com/mnemosyne-ai-systems/chorus-sdk-go/api/proto/v1;chorusv1";
+
+import "google/protobuf/empty.proto";
+
+// ============================================================
+// 错误码（§10）
+// ============================================================
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  CONFLICT = 1;          // 版本冲突（CAS 失败）
+  EPOCH_STALE = 2;       // epoch 不匹配，客户端停止执行
+  ALREADY_CLAIMED = 3;   // 已被认领（附 current_owner/current_epoch/lease_expires_at）
+  NOT_FOUND = 4;         // 实体或 key 不存在
+  LEASE_EXPIRED = 5;     // 租约已过期（含 Spawn claim）
+  DELETING = 6;          // 实体处于 deleting，写被拒（FAILED_PRECONDITION 子码）
+  ALREADY_EXISTS = 7;    // 创建类操作撞上已存在实体
+  INVALID_ARGUMENT = 8;  // 参数错误（id 字符集、limit 越界）
+  REDIRECT = 9;          // 分片已迁移，附 new_owner + endpoint
+  RETRY = 10;            // 临时错误（draining/自检失败/PD 不可达），附 retry_after_ms
+  INTERNAL = 11;         // 内部错误
+  // FAILED_PRECONDITION 是 §10 中 DELETING 的父类：DELETING 表示实体正在级联删除
+  // （可直接重试等待），其余前置条件不满足（SESSION_ENDED / ACTIVE_SESSIONS_EXIST 等）
+  // 归到这里，具体原因放 message。
+  FAILED_PRECONDITION = 12;
+}
+
+// ChorusError 是 §10 错误码的线上表示。
+message ChorusError {
+  ErrorCode code = 1;
+  string message = 2;
+
+  // RETRY：退避建议（§10：200 + jitter(0~200ms)）
+  int32 retry_after_ms = 3;
+
+  // REDIRECT（§8.4 / §11.2）
+  uint64 shard_id = 4;
+  uint64 shard_epoch = 5;
+  string new_owner = 6;
+  string endpoint = 7;
+
+  // ALREADY_CLAIMED（§8.3）
+  string current_owner = 8;
+  uint64 current_epoch = 9;
+  uint64 current_lease_expires_at = 10;
+}
+
+// ============================================================
+// 通用
+// ============================================================
+
+// PageRequest 是分页参数（§8.2：limit 上限 1000，越界返回 INVALID_ARGUMENT）。
+message PageRequest {
+  string page_token = 1;
+  int32 limit = 2; // 0 = 用服务端默认（1000）
+}
+
+// ============================================================
+// RouteService（§8.4）
+// ============================================================
+
+message Shard {
+  uint64 shard_id = 1;
+  uint64 range_lo = 2;
+  uint64 range_hi = 3;
+  string owner_node = 4;
+  uint64 epoch = 5;
+  string state = 6; // "active" | "migrating"（§6.5：只有两个取值）
+}
+
+message Node {
+  string node_id = 1;
+  string endpoint = 2;
+  string status = 3; // "active" | "expired"
+}
+
+message GetRoutesVersionRequest {}
+
+message GetRoutesVersionResponse {
+  uint64 version = 1;
+}
+
+message ListShardsRequest {}
+
+message ListShardsResponse {
+  repeated Shard shards = 1;
+}
+
+message ListNodesRequest {}
+
+message ListNodesResponse {
+  repeated Node nodes = 1;
+}
+
+message GetRouteRequest {
+  string sid = 1;
+}
+
+message GetRouteResponse {
+  uint64 shard_id = 1;
+  uint64 shard_epoch = 2;
+  string owner_node = 3;
+  string endpoint = 4;
+  string owner_status = 5;
+}
+
+service RouteService {
+  rpc GetRoutesVersion(GetRoutesVersionRequest) returns (GetRoutesVersionResponse);
+  rpc ListShards(ListShardsRequest) returns (ListShardsResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc GetRoute(GetRouteRequest) returns (GetRouteResponse);
+}
+
+// ============================================================
+// EntityService（§8.1）
+// ============================================================
+
+message WorkspaceMeta {
+  string ws_id = 1;
+  string name = 2;
+  string status = 3;
+  uint64 created_at = 4;
+  uint64 version = 5;
+}
+
+message SessionMeta {
+  string sid = 1;
+  string ws_id = 2;
+  string status = 3;
+  uint64 created_at = 4;
+  uint64 version = 5;
+}
+
+message SpawnMeta {
+  string spawn_id = 1;
+  string sid = 2;
+  optional string parent_spawn_id = 3;
+  string status = 4;
+  uint64 created_at = 5;
+  uint64 version = 6;
+}
+
+message CreateWorkspaceRequest {
+  string ws_id = 1;
+  string name = 2;
+}
+
+message CreateWorkspaceResponse {
+  string ws_id = 1;
+}
+
+message GetWorkspaceRequest {
+  string ws_id = 1;
+}
+
+message GetWorkspaceResponse {
+  WorkspaceMeta meta = 1;
+}
+
+message ArchiveWorkspaceRequest {
+  string ws_id = 1;
+  uint64 expected_version = 2;
+}
+
+message DeleteWorkspaceRequest {
+  string ws_id = 1;
+}
+
+message CreateSessionRequest {
+  string ws_id = 1;
+  string sid = 2;
+}
+
+message CreateSessionResponse {
+  string sid = 1;
+}
+
+message GetSessionRequest {
+  string sid = 1;
+}
+
+message GetSessionResponse {
+  SessionMeta meta = 1;
+}
+
+message EndSessionRequest {
+  string sid = 1;
+  uint64 expected_version = 2;
+}
+
+message DeleteSessionRequest {
+  string sid = 1;
+}
+
+message CreateSpawnRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  optional string parent_spawn_id = 3;
+}
+
+message CreateSpawnResponse {
+  string spawn_id = 1;
+}
+
+message GetSpawnRequest {
+  string sid = 1;
+  string spawn_id = 2;
+}
+
+message GetSpawnResponse {
+  SpawnMeta meta = 1;
+}
+
+message CompleteSpawnRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  uint64 expected_version = 3;
+}
+
+message DeleteSpawnRequest {
+  string sid = 1;
+  string spawn_id = 2;
+}
+
+message ListSessionsRequest {
+  string ws_id = 1;
+  PageRequest page = 2;
+}
+
+message ListSessionsResponse {
+  repeated string sids = 1;
+  string next_page_token = 2;
+}
+
+// SpawnFilter 对应 §8.1 的 list_spawns(sid, filter?)：
+// parent → 扫 children 索引；status → 扫 spawns 前缀后按 meta.status 过滤。
+message SpawnFilter {
+  optional string parent = 1;
+  optional string status = 2;
+}
+
+message ListSpawnsRequest {
+  string sid = 1;
+  SpawnFilter filter = 2;
+  PageRequest page = 3;
+}
+
+message ListSpawnsResponse {
+  repeated string spawn_ids = 1;
+  string next_page_token = 2;
+}
+
+service EntityService {
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
+  rpc ArchiveWorkspace(ArchiveWorkspaceRequest) returns (google.protobuf.Empty);
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (google.protobuf.Empty);
+
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  rpc EndSession(EndSessionRequest) returns (google.protobuf.Empty);
+  rpc DeleteSession(DeleteSessionRequest) returns (google.protobuf.Empty);
+
+  rpc CreateSpawn(CreateSpawnRequest) returns (CreateSpawnResponse);
+  rpc GetSpawn(GetSpawnRequest) returns (GetSpawnResponse);
+  rpc CompleteSpawn(CompleteSpawnRequest) returns (google.protobuf.Empty);
+  rpc DeleteSpawn(DeleteSpawnRequest) returns (google.protobuf.Empty);
+
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc ListSpawns(ListSpawnsRequest) returns (ListSpawnsResponse);
+}
+
+// ============================================================
+// StateService（§8.2）
+// ============================================================
+
+message StateItem {
+  string key = 1;
+  bytes value = 2;
+  uint64 version = 3;
+}
+
+message PutSessionStateRequest {
+  string sid = 1;
+  string key = 2;
+  bytes value = 3;
+  uint64 expected_version = 4;
+  uint64 shard_epoch = 5; // §9.1 步骤3 防御性校验；0 = 不带
+}
+
+message PutSessionStateResponse {
+  uint64 version = 1;
+}
+
+message GetSessionStateRequest {
+  string sid = 1;
+  string key = 2;
+}
+
+message GetSessionStateResponse {
+  bytes value = 1;
+  uint64 version = 2;
+}
+
+message DeleteSessionStateRequest {
+  string sid = 1;
+  string key = 2;
+  uint64 expected_version = 3;
+  uint64 shard_epoch = 4;
+}
+
+message ListSessionStateRequest {
+  string sid = 1;
+  string key_prefix = 2;
+  PageRequest page = 3;
+}
+
+message ListSessionStateResponse {
+  repeated StateItem items = 1;
+  string next_page_token = 2;
+}
+
+message PutSpawnStateRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  string key = 3;
+  bytes value = 4;
+  uint64 expected_version = 5;
+  uint64 epoch = 6; // Claim Epoch（§8.2）
+}
+
+message PutSpawnStateResponse {
+  uint64 version = 1;
+}
+
+message GetSpawnStateRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  string key = 3;
+}
+
+message GetSpawnStateResponse {
+  bytes value = 1;
+  uint64 version = 2;
+}
+
+message DeleteSpawnStateRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  string key = 3;
+  uint64 expected_version = 4;
+  uint64 epoch = 5;
+}
+
+message ListSpawnStateRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  string key_prefix = 3;
+  PageRequest page = 4;
+}
+
+message ListSpawnStateResponse {
+  repeated StateItem items = 1;
+  string next_page_token = 2;
+}
+
+service StateService {
+  rpc PutSessionState(PutSessionStateRequest) returns (PutSessionStateResponse);
+  rpc GetSessionState(GetSessionStateRequest) returns (GetSessionStateResponse);
+  rpc DeleteSessionState(DeleteSessionStateRequest) returns (google.protobuf.Empty);
+  rpc ListSessionState(ListSessionStateRequest) returns (ListSessionStateResponse);
+
+  rpc PutSpawnState(PutSpawnStateRequest) returns (PutSpawnStateResponse);
+  rpc GetSpawnState(GetSpawnStateRequest) returns (GetSpawnStateResponse);
+  rpc DeleteSpawnState(DeleteSpawnStateRequest) returns (google.protobuf.Empty);
+  rpc ListSpawnState(ListSpawnStateRequest) returns (ListSpawnStateResponse);
+}
+
+// ============================================================
+// ClaimService（§8.3）
+// ============================================================
+
+message ClaimSpawnRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  string executor_id = 3;
+}
+
+message ClaimSpawnResponse {
+  uint64 epoch = 1;
+  uint64 lease_expires_at = 2;
+  int32 renew_after_ms = 3;
+}
+
+message RenewSpawnClaimRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  uint64 epoch = 3;
+}
+
+message RenewSpawnClaimResponse {
+  uint64 lease_expires_at = 1;
+}
+
+message ReleaseSpawnClaimRequest {
+  string sid = 1;
+  string spawn_id = 2;
+  uint64 epoch = 3;
+}
+
+message GetSpawnClaimRequest {
+  string sid = 1;
+  string spawn_id = 2;
+}
+
+message GetSpawnClaimResponse {
+  string owner_id = 1;
+  uint64 epoch = 2;
+  uint64 lease_expires_at = 3;
+}
+
+service ClaimService {
+  rpc ClaimSpawn(ClaimSpawnRequest) returns (ClaimSpawnResponse);
+  rpc RenewSpawnClaim(RenewSpawnClaimRequest) returns (RenewSpawnClaimResponse);
+  rpc ReleaseSpawnClaim(ReleaseSpawnClaimRequest) returns (google.protobuf.Empty);
+  rpc GetSpawnClaim(GetSpawnClaimRequest) returns (GetSpawnClaimResponse);
+}
