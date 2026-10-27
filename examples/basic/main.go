@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	endpoint := flag.String("endpoint", "127.0.0.1:9000", "Chorus node endpoint")
+	endpoint := flag.String("endpoint", "127.0.0.1:9101", "Chorus node endpoint")
 	sid := flag.String("sid", "example-session", "session ID")
 	flag.Parse()
 

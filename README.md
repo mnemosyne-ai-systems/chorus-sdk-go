@@ -8,10 +8,13 @@ The SDK caches the shard routing table locally, routes session-scoped requests b
 
 Public beta. The `v0.1.x` line targets the Chorus `chorus.v1` API. APIs may change before `v1.0.0`; pin an exact version if you need stability.
 
+The SDK is Apache 2.0. The Chorus server is proprietary and private. To run the
+quick start, request evaluation access: [EVALUATION.md](EVALUATION.md).
+
 ## Requirements
 
 - Go 1.22 or newer
-- A reachable Chorus node endpoint
+- A reachable Chorus node endpoint (evaluation access required)
 
 ## Install
 
@@ -40,7 +43,7 @@ func main() {
 	dialer := grpctransport.NewDialer()
 	defer dialer.Close()
 
-	routes, err := dialer.RouteSource("127.0.0.1:9000")
+	routes, err := dialer.RouteSource("127.0.0.1:9101")
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -1,0 +1,85 @@
+name: Evaluation request
+description: Request access to the Chorus core for a hands-on evaluation.
+title: "[Evaluation] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your interest in Chorus. This request is public. Do not include
+        credentials, customer data, or other secrets.
+  - type: input
+    id: name
+    attributes:
+      label: Name
+      placeholder: Your name
+    validations:
+      required: true
+  - type: input
+    id: company
+    attributes:
+      label: Company or project
+      placeholder: Company, team, or project name
+    validations:
+      required: true
+  - type: input
+    id: contact
+    attributes:
+      label: Preferred contact
+      description: Email or GitHub handle. Optional if you prefer to use this issue.
+      placeholder: you@example.com or @handle
+    validations:
+      required: false
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Workload
+      description: What are your agents doing, how long do tasks run, and which actions have side effects?
+      placeholder: LangGraph workers that call payment and ticketing APIs; tasks run for 10-60 minutes.
+    validations:
+      required: true
+  - type: textarea
+    id: failure_mode
+    attributes:
+      label: Failure mode you care about
+      description: Duplicate workers, stale writes, restart recovery, shard movement, or something else?
+      placeholder: After a worker restarts, the old worker still commits a duplicate side effect.
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment target
+      options:
+        - Hosted sandbox
+        - Self-hosted Kubernetes
+        - Self-hosted Docker Compose
+        - Other / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: timeline
+    attributes:
+      label: Timeline
+      options:
+        - Evaluating now
+        - Within 30 days
+        - Within 90 days
+        - Research only
+    validations:
+      required: true
+  - type: checkboxes
+    id: needs
+    attributes:
+      label: What do you need?
+      options:
+        - label: A hosted sandbox
+        - label: A guided private deployment
+        - label: Benchmark guidance
+        - label: Commercial license discussion
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Acknowledgement
+      options:
+        - label: I understand this issue is public and contains no secrets.
+          required: true
