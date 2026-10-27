@@ -64,6 +64,16 @@ func main() {
 
 Use one long-lived `Client` per process. `StartRoutePoll` polls the route version and rebuilds the local cache only when the control plane publishes a newer version.
 
+## Failover demo
+
+See [`examples/worker-lease`](examples/worker-lease) for a runnable demo: a
+worker crashes, another takes over, and the old worker's stale write is rejected
+instead of duplicating a side effect.
+
+```bash
+go run ./examples/worker-lease -endpoint 127.0.0.1:9101
+```
+
 ## What the client handles
 
 - Local shard lookup: `hash(session_id)` is evaluated against the cached shard ranges, with no network round trip per lookup.
