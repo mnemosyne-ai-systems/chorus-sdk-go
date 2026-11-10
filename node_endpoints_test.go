@@ -89,6 +89,46 @@ func TestNodeEndpointFailoverUsesNextInHashOrder(t *testing.T) {
 	}
 }
 
+// gRPC 的 Dial 是惰性的：节点已死通常表现为第一次 RPC 返回 Unavailable
+// （映射为 *RetryError），而不是 Dial 返回错误。这条测试覆盖真实路径。
+func TestNodeEndpointFailoverOnRetryError(t *testing.T) {
+	order := []string{"n1", "n2"}
+	var sid string
+	for i := 0; i < 10000; i++ {
+		candidate := fmt.Sprintf("sid-%d", i)
+		if orderNodeEndpoints(candidate, order)[0] == "n1" {
+			sid = candidate
+			break
+		}
+	}
+	if sid == "" {
+		t.Fatal("no sid found with n1 first")
+	}
+
+	d := newDialer()
+	connN1 := &fakeConn{}
+	connN1.getFn = func(GetSessionStateReq) (GetSessionStateResp, error) {
+		return GetSessionStateResp{}, &RetryError{RetryAfterMs: 1}
+	}
+	connN2 := &fakeConn{}
+	d.setEndpoint("n1", connN1)
+	d.setEndpoint("n2", connN2)
+
+	c := NewClient(statelessRoutes(), d, WithNodeEndpoints(order...), WithPollInterval(time.Hour))
+	if err := c.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetSessionState(context.Background(), sid, "k"); err != nil {
+		t.Fatalf("request should fail over to n2 after RETRY from n1: %v", err)
+	}
+	if got := d.dialCount("n1"); got != 1 {
+		t.Fatalf("n1 dialed %d times, want 1", got)
+	}
+	if got := d.dialCount("n2"); got != 1 {
+		t.Fatalf("n2 dialed %d times, want 1", got)
+	}
+}
+
 func TestNodeEndpointListChangeMovesAboutOneOverN(t *testing.T) {
 	three := []string{"n1", "n2", "n3"}
 	four := []string{"n1", "n2", "n3", "n4"}
