@@ -69,10 +69,12 @@ func (d *seedDialer) callLog() []string {
 func TestSeedFailoverToSecondEndpoint(t *testing.T) {
 	good := &fakeRoutes{}
 	good.set(7, splitTwoShards("nA", "nB"), twoNodeRoutes("nA", "nB"))
+	seed2 := &flakyRoutes{fakeRoutes: good}
+	seed1 := &fakeRoutes{}
 
 	d := newSeedDialer()
 	d.setSource("seed-1", nil, errors.New("seed-1 unreachable"))
-	d.setSource("seed-2", good, nil)
+	d.setSource("seed-2", seed2, nil)
 
 	c := NewClient(nil, d, WithSeedEndpoints("seed-1", "seed-2"), WithPollInterval(time.Hour))
 	if err := c.Reload(context.Background()); err != nil {
@@ -86,23 +88,28 @@ func TestSeedFailoverToSecondEndpoint(t *testing.T) {
 		t.Fatalf("Route=%+v err=%v, want route from seed-2", r, err)
 	}
 
-	// 成功后记住 seed-2：下一次刷新应直接从它开始，不再撞 seed-1。
-	d.resetCalls()
+	// 成功后记住 seed-2：让 seed-2 失败、seed-1 恢复，下一次刷新必须先撞
+	// seed-2（证明起点是记住的种子），再切到 seed-1。
+	seed2.setFail(true)
+	seed1.set(8, splitTwoShards("nA", "nB"), twoNodeRoutes("nA", "nB"))
+	d.setSource("seed-1", seed1, nil)
 	if err := c.Reload(context.Background()); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Reload should fall back from seed-2 to seed-1: %v", err)
 	}
-	for _, ep := range d.callLog() {
-		if ep == "seed-1" {
-			t.Fatalf("after success the client went back to seed-1: calls=%v", d.callLog())
-		}
+	if seed2.versionCalls() == 0 {
+		t.Fatal("client did not start from the remembered seed-2")
+	}
+	if got := c.RoutesVersion(); got != 8 {
+		t.Fatalf("RoutesVersion=%d, want 8 from recovered seed-1", got)
 	}
 }
 
 // flakyRoutes 模拟节点可达性变化：源对象本身还在，但 RPC 失败。
 type flakyRoutes struct {
 	*fakeRoutes
-	mu   sync.Mutex
-	fail bool
+	mu     sync.Mutex
+	fail   bool
+	vcalls int
 }
 
 func (f *flakyRoutes) setFail(v bool) {
@@ -117,8 +124,18 @@ func (f *flakyRoutes) failing() bool {
 	return f.fail
 }
 
+func (f *flakyRoutes) versionCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.vcalls
+}
+
 func (f *flakyRoutes) GetRoutesVersion(ctx context.Context) (uint64, error) {
-	if f.failing() {
+	f.mu.Lock()
+	f.vcalls++
+	fail := f.fail
+	f.mu.Unlock()
+	if fail {
 		return 0, errors.New("node down")
 	}
 	return f.fakeRoutes.GetRoutesVersion(ctx)
@@ -148,7 +165,7 @@ func TestSeedAllUnreachableKeepsCachedRoutes(t *testing.T) {
 	d.setSource("seed-1", seed1, nil)
 	d.setSource("seed-2", seed2, nil)
 
-	c := NewClient(nil, d, WithSeedEndpoints("seed-1", "seed-2"), WithPollInterval(time.Hour))
+	c := NewClient(nil, d, WithSeedEndpoints("seed-1", "seed-2"), WithPollInterval(5*time.Millisecond))
 	if err := c.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
