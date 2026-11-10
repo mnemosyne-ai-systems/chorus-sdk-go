@@ -15,6 +15,13 @@
   calls also send `x-chorus-spawn`, so layer-7 load balancers can hash
   consistently.
 
+### Fixed
+
+- When only `WithNodeEndpoints` is set, those endpoints now also serve as route
+  polling seeds. Route discovery no longer depends on the construction-time
+  endpoint (typically the virtual `lb`), and `routes` may be `nil` when the
+  dialer implements `sdk.RouteSourceProvider`.
+
 ### Changed (breaking)
 
 - `PutSpawnState` and `DeleteSpawnState` now reject `claimEpoch == 0` locally

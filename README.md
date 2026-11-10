@@ -85,8 +85,13 @@ client := sdk.NewClient(nil, dialer,
 ```
 
 `WithSeedEndpoints` requires a dialer that implements `sdk.RouteSourceProvider`;
-`grpctransport.Dialer` does. When neither option is set, the SDK keeps the
-original single-endpoint behavior and uses the endpoint from the route cache.
+`grpctransport.Dialer` does. If `WithSeedEndpoints` is not set, the endpoints
+from `WithNodeEndpoints` are also used as route-polling seeds. This means a
+stateless client does not depend on the virtual `lb` endpoint for route
+discovery, and `NewClient(nil, dialer, sdk.WithNodeEndpoints(...))` is enough
+when the dialer provides route sources. When neither option is set, the SDK
+keeps the original single-endpoint behavior and uses the endpoint from the
+route cache.
 
 Session-scoped gRPC calls also carry `x-chorus-sid`; spawn-scoped calls carry
 `x-chorus-spawn` as well, so a layer-7 load balancer can hash consistently.
@@ -109,7 +114,7 @@ go run ./examples/worker-lease -endpoint 127.0.0.1:9101
 
 - Local shard lookup: `hash(session_id)` is evaluated against the cached shard ranges, with no network round trip per lookup.
 - Seed failover: route polling rotates through `WithSeedEndpoints`, remembers the last healthy seed, and keeps the old cache when all seeds are down.
-- Node selection: `WithNodeEndpoints` uses rendezvous hashing per session ID and falls through to the next node on failure.
+- Node selection: `WithNodeEndpoints` uses rendezvous hashing per session ID and falls through to the next node on failure. Without `WithSeedEndpoints`, the same endpoints are used as route-polling seeds.
 - Redirects: a `REDIRECT` response updates the local route immediately and retries against the new owner.
 - Retries: `RETRY` responses use bounded jittered backoff, followed by one full route reload.
 - CAS: `Client.CAS` and `Client.CASSpawnState` run the bounded read/modify/write loop.

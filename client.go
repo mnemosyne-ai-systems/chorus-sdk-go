@@ -108,9 +108,20 @@ func (c *Client) StartRoutePoll(ctx context.Context) {
 	}()
 }
 
+// routeSeeds 返回路由轮询使用的种子。显式 WithSeedEndpoints 优先；只配置了
+// WithNodeEndpoints 时，节点 endpoint 同时作为路由种子（无状态模式下构造时
+// 传入的单个 endpoint 通常只是虚拟 lb，不能依赖它做路由发现）。
+func (c *Client) routeSeeds() []string {
+	if len(c.seeds) > 0 {
+		return c.seeds
+	}
+	return c.nodeEndpoints
+}
+
 // currentRoutesVersion 用当前可用的种子读路由版本；未配置种子时沿用 routes。
 func (c *Client) currentRoutesVersion(ctx context.Context) (uint64, error) {
-	if len(c.seeds) == 0 {
+	seeds := c.routeSeeds()
+	if len(seeds) == 0 {
 		return c.routes.GetRoutesVersion(ctx)
 	}
 	c.seedMu.Lock()
@@ -121,7 +132,11 @@ func (c *Client) currentRoutesVersion(ctx context.Context) (uint64, error) {
 		}
 		return 0, errNoSeedRouteSource
 	}
-	src, err := c.seedSourceLocked(c.seeds[c.seedIdx])
+	idx := c.seedIdx
+	if idx >= len(seeds) {
+		idx = 0
+	}
+	src, err := c.seedSourceLocked(seeds[idx])
 	if err != nil {
 		return 0, err
 	}
@@ -134,7 +149,7 @@ func (c *Client) currentRoutesVersion(ctx context.Context) (uint64, error) {
 // 配置了种子节点时按当前种子开始依次尝试；任一成功即记住该种子。所有种子都
 // 失败时返回错误，且不触碰已有缓存（reloadFrom 只在全部读取成功后提交）。
 func (c *Client) Reload(ctx context.Context) error {
-	if len(c.seeds) == 0 {
+	if len(c.routeSeeds()) == 0 {
 		return c.reloadFrom(ctx, c.routes)
 	}
 	return c.reloadFromSeeds(ctx)
@@ -149,11 +164,15 @@ func (c *Client) reloadFromSeeds(ctx context.Context) error {
 		}
 		return errNoSeedRouteSource
 	}
+	seeds := c.routeSeeds()
 	start := c.seedIdx
+	if start >= len(seeds) {
+		start = 0
+	}
 	var lastErr error
-	for i := 0; i < len(c.seeds); i++ {
-		idx := (start + i) % len(c.seeds)
-		src, err := c.seedSourceLocked(c.seeds[idx])
+	for i := 0; i < len(seeds); i++ {
+		idx := (start + i) % len(seeds)
+		src, err := c.seedSourceLocked(seeds[idx])
 		if err != nil {
 			lastErr = err
 			continue
