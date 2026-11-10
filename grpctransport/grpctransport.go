@@ -21,6 +21,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	sdk "github.com/mnemosyne-ai-systems/chorus-sdk-go"
 	chorusv1 "github.com/mnemosyne-ai-systems/chorus-sdk-go/api/proto/v1"
@@ -130,6 +131,7 @@ func (c *Conn) Route() chorusv1.RouteServiceClient {
 // ---- §8.2 session 级状态 ----
 
 func (c *Conn) PutSessionState(ctx context.Context, req sdk.PutSessionStateReq) (sdk.PutSessionStateResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, "")
 	resp, err := chorusv1.NewStateServiceClient(c.cc).PutSessionState(ctx, &chorusv1.PutSessionStateRequest{
 		Sid:             req.Sid,
 		Key:             req.Key,
@@ -144,6 +146,7 @@ func (c *Conn) PutSessionState(ctx context.Context, req sdk.PutSessionStateReq) 
 }
 
 func (c *Conn) GetSessionState(ctx context.Context, req sdk.GetSessionStateReq) (sdk.GetSessionStateResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, "")
 	resp, err := chorusv1.NewStateServiceClient(c.cc).GetSessionState(ctx, &chorusv1.GetSessionStateRequest{
 		Sid: req.Sid,
 		Key: req.Key,
@@ -155,6 +158,7 @@ func (c *Conn) GetSessionState(ctx context.Context, req sdk.GetSessionStateReq) 
 }
 
 func (c *Conn) DeleteSessionState(ctx context.Context, req sdk.DeleteSessionStateReq) error {
+	ctx = withRoutingMetadata(ctx, req.Sid, "")
 	_, err := chorusv1.NewStateServiceClient(c.cc).DeleteSessionState(ctx, &chorusv1.DeleteSessionStateRequest{
 		Sid:             req.Sid,
 		Key:             req.Key,
@@ -165,6 +169,7 @@ func (c *Conn) DeleteSessionState(ctx context.Context, req sdk.DeleteSessionStat
 }
 
 func (c *Conn) ListSessionState(ctx context.Context, req sdk.ListSessionStateReq) (sdk.ListSessionStateResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, "")
 	resp, err := chorusv1.NewStateServiceClient(c.cc).ListSessionState(ctx, &chorusv1.ListSessionStateRequest{
 		Sid:       req.Sid,
 		KeyPrefix: req.KeyPrefix,
@@ -179,6 +184,7 @@ func (c *Conn) ListSessionState(ctx context.Context, req sdk.ListSessionStateReq
 // ---- §8.2 spawn 级状态 ----
 
 func (c *Conn) PutSpawnState(ctx context.Context, req sdk.PutSpawnStateReq) (sdk.PutSpawnStateResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, req.SpawnID)
 	resp, err := chorusv1.NewStateServiceClient(c.cc).PutSpawnState(ctx, &chorusv1.PutSpawnStateRequest{
 		Sid:             req.Sid,
 		SpawnId:         req.SpawnID,
@@ -194,6 +200,7 @@ func (c *Conn) PutSpawnState(ctx context.Context, req sdk.PutSpawnStateReq) (sdk
 }
 
 func (c *Conn) GetSpawnState(ctx context.Context, req sdk.GetSpawnStateReq) (sdk.GetSpawnStateResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, req.SpawnID)
 	resp, err := chorusv1.NewStateServiceClient(c.cc).GetSpawnState(ctx, &chorusv1.GetSpawnStateRequest{
 		Sid:     req.Sid,
 		SpawnId: req.SpawnID,
@@ -206,6 +213,7 @@ func (c *Conn) GetSpawnState(ctx context.Context, req sdk.GetSpawnStateReq) (sdk
 }
 
 func (c *Conn) DeleteSpawnState(ctx context.Context, req sdk.DeleteSpawnStateReq) error {
+	ctx = withRoutingMetadata(ctx, req.Sid, req.SpawnID)
 	_, err := chorusv1.NewStateServiceClient(c.cc).DeleteSpawnState(ctx, &chorusv1.DeleteSpawnStateRequest{
 		Sid:             req.Sid,
 		SpawnId:         req.SpawnID,
@@ -217,6 +225,7 @@ func (c *Conn) DeleteSpawnState(ctx context.Context, req sdk.DeleteSpawnStateReq
 }
 
 func (c *Conn) ListSpawnState(ctx context.Context, req sdk.ListSpawnStateReq) (sdk.ListSpawnStateResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, req.SpawnID)
 	resp, err := chorusv1.NewStateServiceClient(c.cc).ListSpawnState(ctx, &chorusv1.ListSpawnStateRequest{
 		Sid:       req.Sid,
 		SpawnId:   req.SpawnID,
@@ -232,6 +241,7 @@ func (c *Conn) ListSpawnState(ctx context.Context, req sdk.ListSpawnStateReq) (s
 // ---- §8.3 协调原语 ----
 
 func (c *Conn) ClaimSpawn(ctx context.Context, req sdk.ClaimSpawnReq) (sdk.ClaimSpawnResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, req.SpawnID)
 	resp, err := chorusv1.NewClaimServiceClient(c.cc).ClaimSpawn(ctx, &chorusv1.ClaimSpawnRequest{
 		Sid:        req.Sid,
 		SpawnId:    req.SpawnID,
@@ -248,6 +258,7 @@ func (c *Conn) ClaimSpawn(ctx context.Context, req sdk.ClaimSpawnReq) (sdk.Claim
 }
 
 func (c *Conn) RenewSpawnClaim(ctx context.Context, req sdk.RenewSpawnClaimReq) (sdk.RenewSpawnClaimResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, req.SpawnID)
 	resp, err := chorusv1.NewClaimServiceClient(c.cc).RenewSpawnClaim(ctx, &chorusv1.RenewSpawnClaimRequest{
 		Sid:     req.Sid,
 		SpawnId: req.SpawnID,
@@ -260,6 +271,7 @@ func (c *Conn) RenewSpawnClaim(ctx context.Context, req sdk.RenewSpawnClaimReq) 
 }
 
 func (c *Conn) ReleaseSpawnClaim(ctx context.Context, req sdk.ReleaseSpawnClaimReq) error {
+	ctx = withRoutingMetadata(ctx, req.Sid, req.SpawnID)
 	_, err := chorusv1.NewClaimServiceClient(c.cc).ReleaseSpawnClaim(ctx, &chorusv1.ReleaseSpawnClaimRequest{
 		Sid:     req.Sid,
 		SpawnId: req.SpawnID,
@@ -269,6 +281,7 @@ func (c *Conn) ReleaseSpawnClaim(ctx context.Context, req sdk.ReleaseSpawnClaimR
 }
 
 func (c *Conn) GetSpawnClaim(ctx context.Context, req sdk.GetSpawnClaimReq) (sdk.GetSpawnClaimResp, error) {
+	ctx = withRoutingMetadata(ctx, req.Sid, req.SpawnID)
 	resp, err := chorusv1.NewClaimServiceClient(c.cc).GetSpawnClaim(ctx, &chorusv1.GetSpawnClaimRequest{
 		Sid:     req.Sid,
 		SpawnId: req.SpawnID,
@@ -335,6 +348,32 @@ func (r *RouteSource) ListNodes(ctx context.Context) ([]sdk.Node, error) {
 }
 
 // ---- 小工具 ----
+
+const (
+	metadataKeySID   = "x-chorus-sid"
+	metadataKeySpawn = "x-chorus-spawn"
+)
+
+// withRoutingMetadata 把会话/派生标识放进 outgoing metadata，供七层负载均衡
+// 做一致性哈希：同一个 sid（以及 spawn 级调用）尽量落到同一个节点。
+func withRoutingMetadata(ctx context.Context, sid, spawnID string) context.Context {
+	if sid == "" && spawnID == "" {
+		return ctx
+	}
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if ok {
+		md = md.Copy()
+	} else {
+		md = metadata.MD{}
+	}
+	if sid != "" {
+		md.Set(metadataKeySID, sid)
+	}
+	if spawnID != "" {
+		md.Set(metadataKeySpawn, spawnID)
+	}
+	return metadata.NewOutgoingContext(ctx, md)
+}
 
 // page 组装分页参数：limit<=0 交给服务端取默认（§8.2 默认 1000）。
 func page(token string, limit int) *chorusv1.PageRequest {
