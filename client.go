@@ -481,6 +481,9 @@ func (c *Client) ListSessionState(ctx context.Context, sid, keyPrefix, pageToken
 // ---- §8.2 spawn 级状态 ----
 
 func (c *Client) PutSpawnState(ctx context.Context, sid, spawnID, key string, value []byte, expectedVersion, claimEpoch uint64) (PutSpawnStateResp, error) {
+	if claimEpoch == 0 {
+		return PutSpawnStateResp{}, ErrEpochRequired
+	}
 	var out PutSpawnStateResp
 	err := c.do(ctx, sid, func(conn Conn, _ Shard, _ Node) error {
 		v, err := conn.PutSpawnState(ctx, PutSpawnStateReq{
@@ -504,6 +507,9 @@ func (c *Client) GetSpawnState(ctx context.Context, sid, spawnID, key string) (G
 }
 
 func (c *Client) DeleteSpawnState(ctx context.Context, sid, spawnID, key string, expectedVersion, claimEpoch uint64) error {
+	if claimEpoch == 0 {
+		return ErrEpochRequired
+	}
 	return c.do(ctx, sid, func(conn Conn, _ Shard, _ Node) error {
 		return conn.DeleteSpawnState(ctx, DeleteSpawnStateReq{
 			Sid: sid, SpawnID: spawnID, Key: key, ExpectedVersion: expectedVersion, Epoch: claimEpoch,
