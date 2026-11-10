@@ -64,6 +64,37 @@ func main() {
 
 Use one long-lived `Client` per process. `StartRoutePoll` polls the route version and rebuilds the local cache only when the control plane publishes a newer version.
 
+## Stateless routing and failover
+
+Chorus nodes are stateless: any node can serve any request, and the routing
+interface only exposes a virtual `lb` node. Two options let the SDK choose real
+nodes itself:
+
+```go
+client := sdk.NewClient(nil, dialer,
+    // Route queries fail over across these seeds in order. The last healthy
+    // seed is remembered; if all are down the cached route table is kept and
+    // polling retries after the normal backoff.
+    sdk.WithSeedEndpoints("10.0.0.1:9101", "10.0.0.2:9101"),
+
+    // Data-plane requests choose a node per session ID using rendezvous
+    // hashing. If a node is unreachable, the next node in hash order is tried.
+    // Required in stateless mode because ListNodes only returns "lb".
+    sdk.WithNodeEndpoints("10.0.0.1:9101", "10.0.0.2:9101", "10.0.0.3:9101"),
+)
+```
+
+`WithSeedEndpoints` requires a dialer that implements `sdk.RouteSourceProvider`;
+`grpctransport.Dialer` does. When neither option is set, the SDK keeps the
+original single-endpoint behavior and uses the endpoint from the route cache.
+
+Session-scoped gRPC calls also carry `x-chorus-sid`; spawn-scoped calls carry
+`x-chorus-spawn` as well, so a layer-7 load balancer can hash consistently.
+
+Spawn writes (`PutSpawnState`, `DeleteSpawnState`) require a non-zero claim
+epoch. Pass the epoch returned by `ClaimSpawn`/`RenewSpawnClaim`; epoch `0` is
+rejected locally with `ErrEpochRequired`.
+
 ## Failover demo
 
 See [`examples/worker-lease`](examples/worker-lease) for a runnable demo: a
@@ -77,10 +108,13 @@ go run ./examples/worker-lease -endpoint 127.0.0.1:9101
 ## What the client handles
 
 - Local shard lookup: `hash(session_id)` is evaluated against the cached shard ranges, with no network round trip per lookup.
+- Seed failover: route polling rotates through `WithSeedEndpoints`, remembers the last healthy seed, and keeps the old cache when all seeds are down.
+- Node selection: `WithNodeEndpoints` uses rendezvous hashing per session ID and falls through to the next node on failure.
 - Redirects: a `REDIRECT` response updates the local route immediately and retries against the new owner.
 - Retries: `RETRY` responses use bounded jittered backoff, followed by one full route reload.
 - CAS: `Client.CAS` and `Client.CASSpawnState` run the bounded read/modify/write loop.
 - Stop signals: `EPOCH_STALE`, `LEASE_EXPIRED`, and failed preconditions are returned to the caller without hidden retries.
+- Spawn writes require a non-zero claim epoch (`ErrEpochRequired` otherwise).
 
 ## Packages
 

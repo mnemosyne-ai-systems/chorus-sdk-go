@@ -141,4 +141,3 @@ func assertMetadata(t *testing.T, md metadata.MD, wantSID, wantSpawn string) {
 		t.Fatalf("x-chorus-spawn = %v, want [%s]", gotSpawn, wantSpawn)
 	}
 }
-
