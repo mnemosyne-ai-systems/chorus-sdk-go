@@ -51,6 +51,9 @@ func (c *Client) CAS(ctx context.Context, sid, key string,
 func (c *Client) CASSpawnState(ctx context.Context, sid, spawnID, key string, claimEpoch uint64,
 	fn func(old []byte, exists bool, version uint64) (newVal []byte, err error),
 ) (uint64, error) {
+	if claimEpoch == 0 {
+		return 0, ErrEpochRequired
+	}
 	return c.casLoop(ctx, maxCasRounds,
 		func() ([]byte, bool, uint64, error) {
 			v, err := c.GetSpawnState(ctx, sid, spawnID, key)
