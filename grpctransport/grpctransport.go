@@ -85,6 +85,12 @@ func (d *Dialer) RouteSource(endpoint string) (*RouteSource, error) {
 	return &RouteSource{route: c.Route()}, nil
 }
 
+// RouteSourceAt 实现 sdk.RouteSourceProvider：WithSeedEndpoints 用它按 seed
+// endpoint 懒建路由查询面。
+func (d *Dialer) RouteSourceAt(endpoint string) (sdk.RouteSource, error) {
+	return d.RouteSource(endpoint)
+}
+
 // Close 关闭所有已建立的连接（进程退出或客户端重建时调用）。
 func (d *Dialer) Close() error {
 	d.mu.Lock()

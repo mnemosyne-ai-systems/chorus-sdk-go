@@ -30,6 +30,12 @@ type RouteSource interface {
 	ListNodes(ctx context.Context) ([]Node, error)
 }
 
+// RouteSourceProvider 是 Dialer 的可选能力：按 seed endpoint 构造路由查询面。
+// WithSeedEndpoints 依赖它做种子节点失败切换。
+type RouteSourceProvider interface {
+	RouteSourceAt(endpoint string) (RouteSource, error)
+}
+
 // Route 是 get_route(session_id) 的返回（§8.4）。
 type Route struct {
 	ShardID     uint64
