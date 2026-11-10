@@ -46,6 +46,7 @@ type Client struct {
 	pollInterval time.Duration
 
 	seeds         []string
+	nodeEndpoints []string
 	routeProvider RouteSourceProvider
 
 	// seedMu 保护种子切换状态；Reload 可能同时被轮询和请求路径调用。
@@ -333,19 +334,32 @@ func (c *Client) do(ctx context.Context, sid string, op func(conn Conn, sh Shard
 	retries := 0
 	redirects := 0
 	reloaded := false
+	nodeAttempt := 0
 	for {
 		sh, node, err := c.routeOnce(ctx, sid)
 		if err != nil {
 			if !reloaded && IsRetryable(err) {
 				if rerr := c.Reload(ctx); rerr == nil {
 					reloaded = true
+					nodeAttempt = 0
 					continue
 				}
 			}
 			return err
 		}
-		conn, err := c.dialer.Dial(ctx, node.Endpoint)
+		// 未配置 WithNodeEndpoints 时 endpoints 只有一个元素（路由缓存里的
+		// endpoint），行为与旧版完全一致。配置后按 rendezvous 顺序逐个尝试。
+		endpoints := c.dataEndpoints(sid, node)
+		if nodeAttempt >= len(endpoints) {
+			nodeAttempt = 0
+		}
+		conn, err := c.dialer.Dial(ctx, endpoints[nodeAttempt])
 		if err != nil {
+			if nodeAttempt < len(endpoints)-1 {
+				nodeAttempt++ // 连接失败：按哈希顺序换下一个节点，不消耗 RETRY 预算
+				continue
+			}
+			nodeAttempt = 0
 			// 网络错误按 RETRY 预算处理（有界，G4：不做无限重试）
 			retries++
 			if retries >= maxRequestRetries {
@@ -369,6 +383,7 @@ func (c *Client) do(ctx context.Context, sid string, op func(conn Conn, sh Shard
 		var retry *RetryError
 		switch {
 		case errors.As(err, &red):
+			nodeAttempt = 0
 			applied := c.applyRedirect(red) // G2
 			redirects++
 			// 分片不在本地表里（split 切界会产生新分片 id）：载荷补不出区间，只能全量刷新，
@@ -393,6 +408,11 @@ func (c *Client) do(ctx context.Context, sid string, op func(conn Conn, sh Shard
 			}
 			continue
 		case errors.As(err, &retry):
+			if nodeAttempt < len(endpoints)-1 {
+				nodeAttempt++ // 当前节点返回 RETRY：先换到下一个节点
+				continue
+			}
+			nodeAttempt = 0
 			retries++
 			if retries >= maxRequestRetries {
 				if !reloaded {
