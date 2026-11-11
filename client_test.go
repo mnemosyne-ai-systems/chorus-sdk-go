@@ -53,6 +53,9 @@ type fakeConn struct {
 	putCalls int
 	getCalls int
 
+	spawnPutCalls    int
+	spawnDeleteCalls int
+
 	putFn func(PutSessionStateReq) (PutSessionStateResp, error)
 	getFn func(GetSessionStateReq) (GetSessionStateResp, error)
 }
@@ -83,13 +86,21 @@ func (f *fakeConn) DeleteSessionState(context.Context, DeleteSessionStateReq) er
 func (f *fakeConn) ListSessionState(context.Context, ListSessionStateReq) (ListSessionStateResp, error) {
 	return ListSessionStateResp{}, nil
 }
-func (f *fakeConn) PutSpawnState(context.Context, PutSpawnStateReq) (PutSpawnStateResp, error) {
+func (f *fakeConn) PutSpawnState(_ context.Context, _ PutSpawnStateReq) (PutSpawnStateResp, error) {
+	f.mu.Lock()
+	f.spawnPutCalls++
+	f.mu.Unlock()
 	return PutSpawnStateResp{}, nil
 }
 func (f *fakeConn) GetSpawnState(context.Context, GetSpawnStateReq) (GetSpawnStateResp, error) {
 	return GetSpawnStateResp{}, nil
 }
-func (f *fakeConn) DeleteSpawnState(context.Context, DeleteSpawnStateReq) error { return nil }
+func (f *fakeConn) DeleteSpawnState(context.Context, DeleteSpawnStateReq) error {
+	f.mu.Lock()
+	f.spawnDeleteCalls++
+	f.mu.Unlock()
+	return nil
+}
 func (f *fakeConn) ListSpawnState(context.Context, ListSpawnStateReq) (ListSpawnStateResp, error) {
 	return ListSpawnStateResp{}, nil
 }

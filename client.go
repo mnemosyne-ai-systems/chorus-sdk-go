@@ -27,12 +27,32 @@ func WithPollInterval(d time.Duration) Option {
 	return func(c *Client) { c.pollInterval = d }
 }
 
+// WithSeedEndpoints 配置路由查询的种子节点。路由轮询失败时按顺序切换到下一个
+// 种子；全部失败时保留旧路由缓存，等待下一轮退避重试。成功后记住当前可用的
+// 种子，后续轮询从它开始。
+//
+// 使用该选项时，dialer 需实现 RouteSourceProvider（grpctransport.Dialer 已实现）。
+// routes 参数可以传 nil。
+func WithSeedEndpoints(endpoints ...string) Option {
+	eps := append([]string(nil), endpoints...)
+	return func(c *Client) { c.seeds = eps }
+}
+
 // Client 是 §11 的客户端 SDK：只缓存路由（G1），不缓存业务状态。
 type Client struct {
 	routes RouteSource
 	dialer Dialer
 
 	pollInterval time.Duration
+
+	seeds         []string
+	nodeEndpoints []string
+	routeProvider RouteSourceProvider
+
+	// seedMu 保护种子切换状态；Reload 可能同时被轮询和请求路径调用。
+	seedMu      sync.Mutex
+	seedIdx     int
+	seedSources map[string]RouteSource
 
 	mu      sync.RWMutex
 	version uint64
@@ -47,10 +67,14 @@ func NewClient(routes RouteSource, dialer Dialer, opts ...Option) *Client {
 		routes:       routes,
 		dialer:       dialer,
 		pollInterval: defaultPollInterval,
+		seedSources:  make(map[string]RouteSource),
 		nodes:        make(map[string]Node),
 	}
 	for _, o := range opts {
 		o(c)
+	}
+	if p, ok := dialer.(RouteSourceProvider); ok {
+		c.routeProvider = p
 	}
 	return c
 }
@@ -66,8 +90,11 @@ func (c *Client) StartRoutePoll(ctx context.Context) {
 				return
 			case <-ticker.C:
 			}
-			v, err := c.routes.GetRoutesVersion(ctx)
+			v, err := c.currentRoutesVersion(ctx)
 			if err != nil {
+				// 当前种子不可达：Reload 会按顺序尝试其余种子；全部失败则保留
+				// 旧缓存，下一轮轮询继续退避重试。
+				_ = c.Reload(ctx)
 				continue
 			}
 			c.mu.RLock()
@@ -81,22 +108,114 @@ func (c *Client) StartRoutePoll(ctx context.Context) {
 	}()
 }
 
+// routeSeeds 返回路由轮询使用的种子。显式 WithSeedEndpoints 优先；只配置了
+// WithNodeEndpoints 时，节点 endpoint 同时作为路由种子（无状态模式下构造时
+// 传入的单个 endpoint 通常只是虚拟 lb，不能依赖它做路由发现）。
+func (c *Client) routeSeeds() []string {
+	if len(c.seeds) > 0 {
+		return c.seeds
+	}
+	return c.nodeEndpoints
+}
+
+// currentRoutesVersion 用当前可用的种子读路由版本；未配置种子时沿用 routes。
+func (c *Client) currentRoutesVersion(ctx context.Context) (uint64, error) {
+	seeds := c.routeSeeds()
+	if len(seeds) == 0 {
+		return c.routes.GetRoutesVersion(ctx)
+	}
+	c.seedMu.Lock()
+	defer c.seedMu.Unlock()
+	if c.routeProvider == nil {
+		if c.routes != nil {
+			return c.routes.GetRoutesVersion(ctx)
+		}
+		return 0, errNoSeedRouteSource
+	}
+	idx := c.seedIdx
+	if idx >= len(seeds) {
+		idx = 0
+	}
+	src, err := c.seedSourceLocked(seeds[idx])
+	if err != nil {
+		return 0, err
+	}
+	return src.GetRoutesVersion(ctx)
+}
+
 // Reload 全量拉取路由（§11.1）：version 读后读两次，
 // 不稳定时用较旧的 version 标记 → 下一轮轮询必然再拉（绝不漏更新）。
+//
+// 配置了种子节点时按当前种子开始依次尝试；任一成功即记住该种子。所有种子都
+// 失败时返回错误，且不触碰已有缓存（reloadFrom 只在全部读取成功后提交）。
 func (c *Client) Reload(ctx context.Context) error {
-	v1, err := c.routes.GetRoutesVersion(ctx)
+	if len(c.routeSeeds()) == 0 {
+		return c.reloadFrom(ctx, c.routes)
+	}
+	return c.reloadFromSeeds(ctx)
+}
+
+func (c *Client) reloadFromSeeds(ctx context.Context) error {
+	c.seedMu.Lock()
+	defer c.seedMu.Unlock()
+	if c.routeProvider == nil {
+		if c.routes != nil {
+			return c.reloadFrom(ctx, c.routes)
+		}
+		return errNoSeedRouteSource
+	}
+	seeds := c.routeSeeds()
+	start := c.seedIdx
+	if start >= len(seeds) {
+		start = 0
+	}
+	var lastErr error
+	for i := 0; i < len(seeds); i++ {
+		idx := (start + i) % len(seeds)
+		src, err := c.seedSourceLocked(seeds[idx])
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := c.reloadFrom(ctx, src); err != nil {
+			lastErr = err
+			continue
+		}
+		c.seedIdx = idx
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = errNoSeedRouteSource
+	}
+	return lastErr
+}
+
+func (c *Client) seedSourceLocked(endpoint string) (RouteSource, error) {
+	if src, ok := c.seedSources[endpoint]; ok {
+		return src, nil
+	}
+	src, err := c.routeProvider.RouteSourceAt(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	c.seedSources[endpoint] = src
+	return src, nil
+}
+
+func (c *Client) reloadFrom(ctx context.Context, src RouteSource) error {
+	v1, err := src.GetRoutesVersion(ctx)
 	if err != nil {
 		return err
 	}
-	shards, err := c.routes.ListShards(ctx)
+	shards, err := src.ListShards(ctx)
 	if err != nil {
 		return err
 	}
-	nodes, err := c.routes.ListNodes(ctx)
+	nodes, err := src.ListNodes(ctx)
 	if err != nil {
 		return err
 	}
-	v2, err := c.routes.GetRoutesVersion(ctx)
+	v2, err := src.GetRoutesVersion(ctx)
 	if err != nil {
 		return err
 	}
@@ -234,19 +353,32 @@ func (c *Client) do(ctx context.Context, sid string, op func(conn Conn, sh Shard
 	retries := 0
 	redirects := 0
 	reloaded := false
+	nodeAttempt := 0
 	for {
 		sh, node, err := c.routeOnce(ctx, sid)
 		if err != nil {
 			if !reloaded && IsRetryable(err) {
 				if rerr := c.Reload(ctx); rerr == nil {
 					reloaded = true
+					nodeAttempt = 0
 					continue
 				}
 			}
 			return err
 		}
-		conn, err := c.dialer.Dial(ctx, node.Endpoint)
+		// 未配置 WithNodeEndpoints 时 endpoints 只有一个元素（路由缓存里的
+		// endpoint），行为与旧版完全一致。配置后按 rendezvous 顺序逐个尝试。
+		endpoints := c.dataEndpoints(sid, node)
+		if nodeAttempt >= len(endpoints) {
+			nodeAttempt = 0
+		}
+		conn, err := c.dialer.Dial(ctx, endpoints[nodeAttempt])
 		if err != nil {
+			if nodeAttempt < len(endpoints)-1 {
+				nodeAttempt++ // 连接失败：按哈希顺序换下一个节点，不消耗 RETRY 预算
+				continue
+			}
+			nodeAttempt = 0
 			// 网络错误按 RETRY 预算处理（有界，G4：不做无限重试）
 			retries++
 			if retries >= maxRequestRetries {
@@ -270,6 +402,7 @@ func (c *Client) do(ctx context.Context, sid string, op func(conn Conn, sh Shard
 		var retry *RetryError
 		switch {
 		case errors.As(err, &red):
+			nodeAttempt = 0
 			applied := c.applyRedirect(red) // G2
 			redirects++
 			// 分片不在本地表里（split 切界会产生新分片 id）：载荷补不出区间，只能全量刷新，
@@ -294,6 +427,11 @@ func (c *Client) do(ctx context.Context, sid string, op func(conn Conn, sh Shard
 			}
 			continue
 		case errors.As(err, &retry):
+			if nodeAttempt < len(endpoints)-1 {
+				nodeAttempt++ // 当前节点返回 RETRY：先换到下一个节点
+				continue
+			}
+			nodeAttempt = 0
 			retries++
 			if retries >= maxRequestRetries {
 				if !reloaded {
@@ -362,6 +500,9 @@ func (c *Client) ListSessionState(ctx context.Context, sid, keyPrefix, pageToken
 // ---- §8.2 spawn 级状态 ----
 
 func (c *Client) PutSpawnState(ctx context.Context, sid, spawnID, key string, value []byte, expectedVersion, claimEpoch uint64) (PutSpawnStateResp, error) {
+	if claimEpoch == 0 {
+		return PutSpawnStateResp{}, ErrEpochRequired
+	}
 	var out PutSpawnStateResp
 	err := c.do(ctx, sid, func(conn Conn, _ Shard, _ Node) error {
 		v, err := conn.PutSpawnState(ctx, PutSpawnStateReq{
@@ -385,6 +526,9 @@ func (c *Client) GetSpawnState(ctx context.Context, sid, spawnID, key string) (G
 }
 
 func (c *Client) DeleteSpawnState(ctx context.Context, sid, spawnID, key string, expectedVersion, claimEpoch uint64) error {
+	if claimEpoch == 0 {
+		return ErrEpochRequired
+	}
 	return c.do(ctx, sid, func(conn Conn, _ Shard, _ Node) error {
 		return conn.DeleteSpawnState(ctx, DeleteSpawnStateReq{
 			Sid: sid, SpawnID: spawnID, Key: key, ExpectedVersion: expectedVersion, Epoch: claimEpoch,

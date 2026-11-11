@@ -17,7 +17,14 @@ var (
 	ErrAlreadyExists   = errors.New("ALREADY_EXISTS")
 	ErrInvalidArgument = errors.New("INVALID_ARGUMENT")
 	ErrInternal        = errors.New("INTERNAL")
+	// ErrEpochRequired：spawn 写必须携带非 0 的 claim epoch。客户端在发请求前
+	// 直接拒绝，避免把必然失败的写送到服务端。
+	ErrEpochRequired = errors.New("EPOCH_REQUIRED")
 )
+
+// errNoSeedRouteSource：配置了 WithSeedEndpoints，但 dialer 不支持按 endpoint
+// 构造 RouteSource，且调用方也没有提供默认 routes。
+var errNoSeedRouteSource = errors.New("sdk: WithSeedEndpoints requires a RouteSourceProvider dialer or a non-nil RouteSource")
 
 // RetryError 对应 RETRY：临时错误，按 retry_after_ms 退避后重试。
 type RetryError struct {
